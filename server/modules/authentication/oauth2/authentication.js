@@ -17,7 +17,9 @@ module.exports = {
       clientSecret: conf.clientSecret,
       userInfoURL: conf.userInfoURL,
       callbackURL: conf.callbackURL,
-      passReqToCallback: true
+      passReqToCallback: true,
+      scope: conf.scope,
+      state: conf.enableCSRFProtection
     }, async (req, accessToken, refreshToken, profile, cb) => {
       try {
         const user = await WIKI.models.users.processProfile({
@@ -29,6 +31,19 @@ module.exports = {
             email: _.get(profile, conf.emailClaim)
           }
         })
+        if (conf.mapGroups) {
+          const groups = _.get(profile, conf.groupsClaim)
+          if (groups && _.isArray(groups)) {
+            const currentGroups = (await user.$relatedQuery('groups').select('groups.id')).map(g => g.id)
+            const expectedGroups = Object.values(WIKI.auth.groups).filter(g => groups.includes(g.name)).map(g => g.id)
+            for (const groupId of _.difference(expectedGroups, currentGroups)) {
+              await user.$relatedQuery('groups').relate(groupId)
+            }
+            for (const groupId of _.difference(currentGroups, expectedGroups)) {
+              await user.$relatedQuery('groups').unrelate().where('groupId', groupId)
+            }
+          }
+        }
         cb(null, user)
       } catch (err) {
         cb(err, null)
@@ -36,7 +51,7 @@ module.exports = {
     })
 
     client.userProfile = function (accesstoken, done) {
-      this._oauth2._useAuthorizationHeaderForGET = true
+      this._oauth2._useAuthorizationHeaderForGET = !conf.useQueryStringForAccessToken
       this._oauth2.get(conf.userInfoURL, accesstoken, (err, data) => {
         if (err) {
           return done(err)
@@ -49,7 +64,7 @@ module.exports = {
         done(null, data)
       })
     }
-    passport.use('oauth2', client)
+    passport.use(conf.key, client)
   },
   logout (conf) {
     if (!conf.logoutURL) {
